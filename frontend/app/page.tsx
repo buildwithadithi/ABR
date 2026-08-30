@@ -1,9 +1,9 @@
-import VideoPlayer from "./VideoPlayer";
+import VideoPlayer from "../app/components/VideoPlayer";
+
 
 export default function Home() {
   return (
     <main>
-      <h1>Adaptive Video Streaming</h1>
 
       <VideoPlayer />
     </main>
