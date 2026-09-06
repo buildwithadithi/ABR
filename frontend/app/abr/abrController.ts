@@ -1,124 +1,131 @@
 import { BandwidthEstimator } from "./bandwidthEstimator";
+
 import { chooseQuality } from "./qualitySelector";
+
 import { decideStartupLevel } from "./startupRamp";
+
 import { decideNextLevel } from "./hysteresis";
+
+import { decideBufferAwareLevel } from "./bufferController";
+
 import { ABRDecision, ABRDecisionType } from "../types/abr";
 
 export class ABRController {
-  private bandwidthEstimator =
-    new BandwidthEstimator();
+  private bandwidthEstimator = new BandwidthEstimator();
 
   private currentLevel = 0;
 
   private startup = true;
 
+  // ==================================================
+  // PROCESS FRAGMENT
+  // ==================================================
+
   processFragment(
     bytesLoaded: number,
     downloadTimeSeconds: number,
+    bufferSeconds: number,
+    segmentDurationSeconds: number,
+    levelBitratesMbps: number[],
   ): ABRDecision {
+    // ==============================================
+    // 1. BANDWIDTH ESTIMATION
+    // ==============================================
 
-    // -----------------------------------------
-    // BANDWIDTH ESTIMATION
-    // -----------------------------------------
+    const estimate = this.bandwidthEstimator.addSample(
+      bytesLoaded,
+      downloadTimeSeconds,
+    );
 
-    const estimate =
-      this.bandwidthEstimator.addSample(
-        bytesLoaded,
-        downloadTimeSeconds,
-      );
+    const { throughputMbps, smoothedThroughputMbps, safeThroughputMbps } =
+      estimate;
 
-    const {
-      throughputMbps,
-      smoothedThroughputMbps,
-      safeThroughputMbps,
-    } = estimate;
-
-    const previousLevel =
-      this.currentLevel;
+    const previousLevel = this.currentLevel;
 
     let nextLevel = previousLevel;
 
-    // -----------------------------------------
-    // IDEAL QUALITY
-    // -----------------------------------------
+    // ==============================================
+    // 2. BANDWIDTH → IDEAL QUALITY
+    // ==============================================
 
-    const idealLevel =
-      chooseQuality(
-        safeThroughputMbps,
-      );
+    const idealLevel = chooseQuality(safeThroughputMbps, levelBitratesMbps);
 
-    // -----------------------------------------
-    // STARTUP
-    // -----------------------------------------
+    // ==============================================
+    // 3. STARTUP / HYSTERESIS
+    // ==============================================
 
     if (this.startup) {
+      nextLevel = decideStartupLevel(
+        previousLevel,
+        safeThroughputMbps,
+        levelBitratesMbps,
+      );
 
-      nextLevel =
-        decideStartupLevel(
-          previousLevel,
-          safeThroughputMbps,
-        );
-
-      // Startup only moves upward.
       if (nextLevel > previousLevel) {
         this.currentLevel = nextLevel;
       }
 
-      // Three measurements → normal ABR
       if (this.hasThreeSamples()) {
         this.startup = false;
       }
-    }
-
-    // -----------------------------------------
-    // NORMAL ABR
-    // -----------------------------------------
-
-    else {
-
-      nextLevel =
-        decideNextLevel(
-          previousLevel,
-          idealLevel,
-          safeThroughputMbps,
-        );
+    } else {
+      nextLevel = decideNextLevel(
+        previousLevel,
+        idealLevel,
+        safeThroughputMbps,
+        levelBitratesMbps,
+      );
 
       this.currentLevel = nextLevel;
     }
 
-    // -----------------------------------------
-    // FINAL LEVEL
-    // -----------------------------------------
+    // ==============================================
+    // 4. BUFFER-AWARE DECISION
+    // ==============================================
 
-    const finalLevel =
-      this.currentLevel;
+    const bufferAwareLevel = decideBufferAwareLevel(
+      this.currentLevel,
+      safeThroughputMbps,
+      bufferSeconds,
+      segmentDurationSeconds,
+      levelBitratesMbps,
+    );
 
-    // -----------------------------------------
-    // ABR DECISION
-    // -----------------------------------------
+    // ==============================================
+    // 5. FINAL LEVEL
+    // ==============================================
+
+    this.currentLevel = bufferAwareLevel;
+
+    const finalLevel = this.currentLevel;
+
+    // ==============================================
+    // 6. DECISION TYPE
+    // ==============================================
 
     let decision: ABRDecisionType;
 
     if (finalLevel > previousLevel) {
       decision = "UPGRADE";
-    }
-    else if (finalLevel < previousLevel) {
+    } else if (finalLevel < previousLevel) {
       decision = "DOWNGRADE";
-    }
-    else {
+    } else {
       decision = "HOLD";
     }
 
-    // -----------------------------------------
-    // RETURN ABR STATE
-    // -----------------------------------------
+    // ==============================================
+    // 7. RETURN DECISION
+    // ==============================================
 
     return {
       throughputMbps,
+
       smoothedThroughputMbps,
+
       safeThroughputMbps,
 
       currentLevel: previousLevel,
+
       idealLevel,
 
       nextLevel: finalLevel,
@@ -129,18 +136,27 @@ export class ABRController {
     };
   }
 
+  // ==================================================
+  // GET CURRENT LEVEL
+  // ==================================================
+
   getCurrentLevel(): number {
     return this.currentLevel;
   }
+
+  // ==================================================
+  // STARTUP STATE
+  // ==================================================
 
   isStartup(): boolean {
     return this.startup;
   }
 
+  // ==================================================
+  // SAMPLE CHECK
+  // ==================================================
+
   private hasThreeSamples(): boolean {
-    return (
-      this.bandwidthEstimator
-        .getSampleCount() >= 3
-    );
+    return this.bandwidthEstimator.getSampleCount() >= 3;
   }
 }

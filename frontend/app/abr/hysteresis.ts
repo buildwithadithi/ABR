@@ -1,7 +1,10 @@
+const UPGRADE_MARGIN = 1.2;
+
 export function decideNextLevel(
   currentLevel: number,
   idealLevel: number,
   safeThroughputMbps: number,
+  levelBitratesMbps: number[],
 ): number {
 
   // -----------------------------------------
@@ -18,18 +21,12 @@ export function decideNextLevel(
 
   if (idealLevel > currentLevel) {
 
-    // Level 0 → Level 1
-    if (
-      currentLevel === 0 &&
-      safeThroughputMbps < 1.5
-    ) {
-      return currentLevel;
-    }
+    const targetBitrate = levelBitratesMbps[idealLevel];
 
-    // Level 1 → Level 2
+    // Require some extra headroom before upgrading
     if (
-      currentLevel === 1 &&
-      safeThroughputMbps < 3.0
+      safeThroughputMbps <
+      targetBitrate * UPGRADE_MARGIN
     ) {
       return currentLevel;
     }

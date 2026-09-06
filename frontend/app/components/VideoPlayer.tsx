@@ -1,17 +1,20 @@
 "use client";
 
+import Hls from "hls.js";
 import {
     useEffect,
     useRef,
     useState,
 } from "react";
-
-import Hls from "hls.js";
-
 import { ABRController } from "@/app/abr/abrController";
-import { ABRDecision } from "@/app/types/abr";
 
-import ABRDashboard from "@/app/components/ABRDashboard";
+import {
+    getBufferState,
+    BufferState,
+} from "@/app/abr/bufferController";
+
+import { getFragmentMetrics } from "@/app/hls/fragmentMetrics";
+import { getBufferMetrics } from "@/app/hls/bufferMetrics";
 
 import ABRTimeline, {
     ABRTimelineEntry,
@@ -21,25 +24,6 @@ const HLS_URL =
     "http://127.0.0.1:8000/hls/master.m3u8";
 
 const MAX_TIMELINE_ENTRIES = 20;
-
-
-// ==================================================
-// BUFFER STATE
-// ==================================================
-
-function getBufferState(
-    bufferSeconds: number,
-) {
-    if (bufferSeconds < 5) {
-        return "LOW";
-    }
-
-    if (bufferSeconds <= 20) {
-        return "HEALTHY";
-    }
-
-    return "HIGH";
-}
 
 
 // ==================================================
@@ -65,36 +49,25 @@ export default function VideoPlayer() {
 
 
     // -----------------------------------------------
-    // LIVE ABR STATE
-    // -----------------------------------------------
-
-    const [abrState, setAbrState] =
-        useState<ABRDecision | null>(null);
-
-
-    // -----------------------------------------------
-    // BUFFER STATE
+    // BUFFER
     // -----------------------------------------------
 
     const [bufferSeconds, setBufferSeconds] =
         useState(0);
 
     const [bufferState, setBufferState] =
-        useState("LOW");
+        useState<BufferState>("CRITICAL");
 
 
     // -----------------------------------------------
     // BUFFER REFS
-    //
-    // These let FRAG_LOADED access the latest
-    // buffer without recreating HLS.
     // -----------------------------------------------
 
     const bufferSecondsRef =
         useRef(0);
 
     const bufferStateRef =
-        useRef("LOW");
+        useRef<BufferState>("CRITICAL");
 
 
     // -----------------------------------------------
@@ -136,11 +109,12 @@ export default function VideoPlayer() {
             if (
                 playbackStartRef.current === null
             ) {
+
                 playbackStartRef.current =
                     performance.now();
             }
-
         };
+
 
         video.addEventListener(
             "play",
@@ -153,95 +127,29 @@ export default function VideoPlayer() {
         // ==================================================
 
         const updateBuffer = () => {
-
-            if (
-                video.buffered.length === 0
-            ) {
-
-                bufferSecondsRef.current = 0;
-
-                bufferStateRef.current =
-                    "LOW";
-
-                setBufferSeconds(0);
-
-                setBufferState("LOW");
-
-                return;
-            }
-
-
-            const currentTime =
-                video.currentTime;
-
-            let buffer = 0;
-
-
-            // -----------------------------------------------
-            // FIND BUFFERED RANGE CONTAINING CURRENT TIME
-            // -----------------------------------------------
-
-            for (
-                let i = 0;
-                i < video.buffered.length;
-                i++
-            ) {
-
-                const start =
-                    video.buffered.start(i);
-
-                const end =
-                    video.buffered.end(i);
-
-
-                if (
-                    currentTime >= start &&
-                    currentTime <= end
-                ) {
-
-                    buffer =
-                        Math.max(
-                            0,
-                            end - currentTime,
-                        );
-
-                    break;
-                }
-            }
-
-
-            const state =
-                getBufferState(buffer);
-
-
-            // -----------------------------------------------
-            // UPDATE REFS
-            // -----------------------------------------------
+            const metrics = getBufferMetrics(video);
 
             bufferSecondsRef.current =
-                buffer;
+                metrics.bufferSeconds;
 
             bufferStateRef.current =
-                state;
+                metrics.bufferState;
 
+            setBufferSeconds(
+                metrics.bufferSeconds,
+            );
 
-            // -----------------------------------------------
-            // UPDATE UI
-            // -----------------------------------------------
-
-            setBufferSeconds(buffer);
-
-            setBufferState(state);
+            setBufferState(
+                metrics.bufferState,
+            );
         };
 
 
         // Run immediately.
-
         updateBuffer();
 
 
-        // Then update every 250ms.
-
+        // Update every 250ms.
         const bufferInterval =
             setInterval(
                 updateBuffer,
@@ -269,216 +177,175 @@ export default function VideoPlayer() {
             // FRAGMENT LOADED
             // ==================================================
 
-            const handleFragmentLoaded =
-                (
-                    _: unknown,
-                    data: any,
-                ) => {
+            const handleFragmentLoaded = (
+                _: unknown,
+                data: any,
+            ) => {
+                const metrics =
+                    getFragmentMetrics(data, hls);
 
-                    const stats =
-                        data.frag.stats;
+                if (!metrics) {
+                    return;
+                }
 
+                const currentBufferSeconds =
+                    bufferSecondsRef.current;
 
-                    const downloadTime =
-                        (
-                            stats.loading.end -
-                            stats.loading.start
-                        ) / 1000;
+                const currentBufferState =
+                    bufferStateRef.current;
 
-
-                    if (
-                        downloadTime <= 0 ||
-                        stats.loaded <= 0
-                    ) {
-                        return;
-                    }
-
-
-                    // ==============================================
-                    // ABR CONTROLLER
-                    // ==============================================
-
-                    const decision =
-                        abrControllerRef.current
-                            .processFragment(
-                                stats.loaded,
-                                downloadTime,
-                            );
-
-
-                    // ==============================================
-                    // TELL HLS WHICH LEVEL TO LOAD NEXT
-                    // ==============================================
-
-                    hls.nextLoadLevel =
-                        decision.nextLevel;
-
-
-                    // ==============================================
-                    // GET LATEST BUFFER
-                    // ==============================================
-
-                    const currentBufferSeconds =
-                        bufferSecondsRef.current;
-
-                    const currentBufferState =
-                        bufferStateRef.current;
-
-
-                    // ==============================================
-                    // UPDATE LIVE ABR STATE
-                    // ==============================================
-
-                    setAbrState({
-                        ...decision,
-
-                        bufferSeconds:
-                            currentBufferSeconds,
-
-                        bufferState:
-                            currentBufferState as
-                            "LOW" |
-                            "HEALTHY" |
-                            "HIGH",
-                    });
-
-
-                    // ==============================================
-                    // TIMELINE TIMESTAMP
-                    // ==============================================
-
-
-                    const timestamp =
-                        data.frag.start;;
-
-
-                    // ==============================================
-                    // ADD TIMELINE ENTRY
-                    // ==============================================
-
-                    const timelineEntry:
-                        ABRTimelineEntry = {
-
-                        timestamp,
-
-                        throughputMbps:
-                            decision.throughputMbps,
-
-                        smoothedThroughputMbps:
-                            decision.smoothedThroughputMbps,
-
-                        safeThroughputMbps:
-                            decision.safeThroughputMbps,
-
-                        currentLevel:
-                            decision.currentLevel,
-
-                        idealLevel:
-                            decision.idealLevel,
-
-                        nextLevel:
-                            decision.nextLevel,
-
-                        decision:
-                            decision.decision,
-
-                        startup:
-                            decision.startup,
-                    };
-
-
-                    setTimeline(
-                        (previous) => {
-
-                            const updated = [
-                                ...previous,
-                                timelineEntry,
-                            ];
-
-
-                            // Keep only the latest
-                            // 20 decisions.
-
-                            return updated.slice(
-                                -MAX_TIMELINE_ENTRIES,
-                            );
-                        },
+                const decision =
+                    abrControllerRef.current.processFragment(
+                        metrics.bytesLoaded,
+                        metrics.downloadTimeSeconds,
+                        currentBufferSeconds,
+                        metrics.segmentDurationSeconds,
+                        metrics.levelBitratesMbps,
                     );
 
+                hls.nextLoadLevel =
+                    decision.nextLevel;
 
-                    // ==============================================
-                    // DEBUG
-                    // ==============================================
 
-                    console.log(
-                        "━━━━━━━━━━━━━━━━━━━━",
-                    );
+                // -------------------------------------------
+                // TIMESTAMP
+                // -------------------------------------------
 
-                    console.log(
-                        "Throughput:",
-                        decision.throughputMbps.toFixed(2),
-                        "Mbps",
-                    );
+                const timestamp =
+                    metrics.timestamp;
 
-                    console.log(
-                        "Smoothed:",
-                        decision.smoothedThroughputMbps.toFixed(2),
-                        "Mbps",
-                    );
 
-                    console.log(
-                        "Safe:",
-                        decision.safeThroughputMbps.toFixed(2),
-                        "Mbps",
-                    );
+                // -------------------------------------------
+                // TIMELINE ENTRY
+                // -------------------------------------------
 
-                    console.log(
-                        "Current:",
+                const timelineEntry:
+                    ABRTimelineEntry = {
+
+                    timestamp,
+
+                    throughputMbps:
+                        decision.throughputMbps,
+
+                    smoothedThroughputMbps:
+                        decision.smoothedThroughputMbps,
+
+                    safeThroughputMbps:
+                        decision.safeThroughputMbps,
+
+                    currentLevel:
                         decision.currentLevel,
-                    );
 
-                    console.log(
-                        "Ideal:",
+                    idealLevel:
                         decision.idealLevel,
-                    );
 
-                    console.log(
-                        "Next:",
+                    nextLevel:
                         decision.nextLevel,
-                    );
 
-                    console.log(
-                        "Decision:",
+                    decision:
                         decision.decision,
-                    );
 
-                    console.log(
-                        "Startup:",
+                    startup:
                         decision.startup,
-                    );
-
-                    console.log(
-                        "Buffer:",
-                        currentBufferSeconds.toFixed(2),
-                        "sec",
-                    );
-
-                    console.log(
-                        "Buffer state:",
-                        currentBufferState,
-                    );
-
-                    console.log(
-                        "Video time:",
-                        timestamp.toFixed(2),
-                        "sec",
-                    );
-
-                    console.log(
-                        "━━━━━━━━━━━━━━━━━━━━",
-                    );
                 };
 
+
+                setTimeline(
+                    (previous) => {
+
+                        const updated = [
+                            ...previous,
+                            timelineEntry,
+                        ];
+
+                        return updated.slice(
+                            -MAX_TIMELINE_ENTRIES,
+                        );
+                    },
+                );
+
+
+                // ==================================================
+                // DEBUG
+                // ==================================================
+
+                console.log(
+                    "━━━━━━━━━━━━━━━━━━━━",
+                );
+                console.log(
+                    "Available bitrates:",
+                    metrics.levelBitratesMbps,
+                );
+
+                console.log(
+                    "Throughput:",
+                    decision.throughputMbps.toFixed(2),
+                    "Mbps",
+                );
+
+                console.log(
+                    "Smoothed:",
+                    decision.smoothedThroughputMbps.toFixed(2),
+                    "Mbps",
+                );
+
+                console.log(
+                    "Safe:",
+                    decision.safeThroughputMbps.toFixed(2),
+                    "Mbps",
+                );
+
+                console.log(
+                    "Current:",
+                    decision.currentLevel,
+                );
+
+                console.log(
+                    "Ideal:",
+                    decision.idealLevel,
+                );
+
+                console.log(
+                    "Next:",
+                    decision.nextLevel,
+                );
+
+                console.log(
+                    "Decision:",
+                    decision.decision,
+                );
+
+                console.log(
+                    "Startup:",
+                    decision.startup,
+                );
+
+                console.log(
+                    "Buffer:",
+                    currentBufferSeconds.toFixed(2),
+                    "sec",
+                );
+
+                console.log(
+                    "Buffer state:",
+                    currentBufferState,
+                );
+
+                console.log(
+                    "Segment duration:",
+                    metrics.segmentDurationSeconds.toFixed(2),
+                    "sec",
+                );
+
+                console.log(
+                    "━━━━━━━━━━━━━━━━━━━━",
+                );
+            };
+
+
+            // ==================================================
+            // REGISTER EVENT
+            // ==================================================
 
             hls.on(
                 Hls.Events.FRAG_LOADED,
@@ -560,18 +427,10 @@ export default function VideoPlayer() {
     return (
         <div className="player-container">
 
-            {/* ============================================ */}
-            {/* TITLE */}
-            {/* ============================================ */}
-
             <h1>
                 Adaptive Video Streaming
             </h1>
 
-
-            {/* ============================================ */}
-            {/* VIDEO PLAYER */}
-            {/* ============================================ */}
 
             <video
                 ref={videoRef}
@@ -579,21 +438,6 @@ export default function VideoPlayer() {
                 width="800"
             />
 
-
-            {/* ============================================ */}
-            {/* LIVE ABR DASHBOARD */}
-            {/* ============================================ */}
-
-            <ABRDashboard
-                decision={abrState}
-                bufferSeconds={bufferSeconds}
-                bufferState={bufferState}
-            />
-
-
-            {/* ============================================ */}
-            {/* ABR DECISION TIMELINE */}
-            {/* ============================================ */}
 
             <ABRTimeline
                 entries={timeline}

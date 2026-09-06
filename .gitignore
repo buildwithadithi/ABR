@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment variables
+.env
+*.env
+
+# Next.js
+node_modules/
+.next/
+
+# Video files
+*.mp4
+*.mov
+*.mkv

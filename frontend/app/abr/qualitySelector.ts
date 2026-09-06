@@ -1,13 +1,14 @@
 export function chooseQuality(
   safeThroughputMbps: number,
+  levelBitratesMbps: number[],
 ): number {
-  if (safeThroughputMbps >= 2.5) {
-    return 2;
+  let idealLevel = 0;
+
+  for (let level = 0; level < levelBitratesMbps.length; level++) {
+    if (levelBitratesMbps[level] <= safeThroughputMbps) {
+      idealLevel = level;
+    }
   }
 
-  if (safeThroughputMbps >= 1.0) {
-    return 1;
-  }
-
-  return 0;
+  return idealLevel;
 }

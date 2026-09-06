@@ -1,19 +1,18 @@
 export function decideStartupLevel(
   currentLevel: number,
   safeThroughputMbps: number,
+  levelBitratesMbps: number[],
 ): number {
-  if (
-    currentLevel === 0 &&
-    safeThroughputMbps >= 1.0
-  ) {
-    return 1;
+  const nextLevel = currentLevel + 1;
+
+  // Already at highest quality
+  if (nextLevel >= levelBitratesMbps.length) {
+    return currentLevel;
   }
 
-  if (
-    currentLevel === 1 &&
-    safeThroughputMbps >= 2.5
-  ) {
-    return 2;
+  // Move up one level only if throughput can safely support it
+  if (safeThroughputMbps >= levelBitratesMbps[nextLevel]) {
+    return nextLevel;
   }
 
   return currentLevel;
