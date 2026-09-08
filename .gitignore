@@ -16,3 +16,5 @@ node_modules/
 *.mp4
 *.mov
 *.mkv
+
+tmp/

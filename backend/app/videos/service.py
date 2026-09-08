@@ -41,3 +41,17 @@ async def create_video(
     await db.refresh(video)
 
     return video
+
+async def get_video_by_id(
+    db: AsyncSession,
+    user: User,
+    video_id: int,
+) -> Video | None:
+    result = await db.execute(
+        select(Video).where(
+            Video.id == video_id,
+            Video.user_id == user.id,
+        )
+    )
+
+    return result.scalar_one_or_none()

@@ -6,10 +6,10 @@ import {
     useRef,
     useState,
 } from "react";
+
 import { ABRController } from "@/app/abr/abrController";
 
 import {
-    getBufferState,
     BufferState,
 } from "@/app/abr/bufferController";
 
@@ -20,8 +20,12 @@ import ABRTimeline, {
     ABRTimelineEntry,
 } from "@/app/components/ABRTimeline";
 
-const HLS_URL =
-    "http://127.0.0.1:8000/hls/master.m3u8";
+
+const API_URL =
+    process.env.NEXT_PUBLIC_API_URL!;
+
+const CLOUDFRONT_URL =
+    process.env.NEXT_PUBLIC_CLOUDFRONT_URL!;
 
 const MAX_TIMELINE_ENTRIES = 20;
 
@@ -30,7 +34,14 @@ const MAX_TIMELINE_ENTRIES = 20;
 // VIDEO PLAYER
 // ==================================================
 
-export default function VideoPlayer() {
+interface VideoPlayerProps {
+    videoId: number;
+}
+
+
+export default function VideoPlayer({
+    videoId,
+}: VideoPlayerProps) {
 
     // -----------------------------------------------
     // VIDEO
@@ -49,7 +60,7 @@ export default function VideoPlayer() {
 
 
     // -----------------------------------------------
-    // BUFFER
+    // BUFFER STATE
     // -----------------------------------------------
 
     const [bufferSeconds, setBufferSeconds] =
@@ -92,12 +103,47 @@ export default function VideoPlayer() {
 
     useEffect(() => {
 
-        const video =
+        // ------------------------------------------
+        // Cancellation flag
+        // ------------------------------------------
+
+        let cancelled = false;
+
+
+        // ------------------------------------------
+        // Get video element
+        // ------------------------------------------
+
+        const videoElement =
             videoRef.current;
 
-        if (!video) {
+        if (videoElement === null) {
             return;
         }
+
+
+        // ------------------------------------------
+        // HLS instance
+        // ------------------------------------------
+
+        let hls: Hls | null = null;
+
+
+        // ------------------------------------------
+        // Reset state for this video
+        // ------------------------------------------
+
+        setTimeline([]);
+
+        setBufferSeconds(0);
+
+        setBufferState("CRITICAL");
+
+        bufferSecondsRef.current = 0;
+
+        bufferStateRef.current = "CRITICAL";
+
+        playbackStartRef.current = null;
 
 
         // ==================================================
@@ -112,11 +158,15 @@ export default function VideoPlayer() {
 
                 playbackStartRef.current =
                     performance.now();
+
+                console.log(
+                    "PLAYBACK STARTED",
+                );
             }
         };
 
 
-        video.addEventListener(
+        videoElement.addEventListener(
             "play",
             handlePlay,
         );
@@ -127,17 +177,25 @@ export default function VideoPlayer() {
         // ==================================================
 
         const updateBuffer = () => {
-            const metrics = getBufferMetrics(video);
+
+            const metrics =
+                getBufferMetrics(
+                    videoElement,
+                );
+
 
             bufferSecondsRef.current =
                 metrics.bufferSeconds;
 
+
             bufferStateRef.current =
                 metrics.bufferState;
+
 
             setBufferSeconds(
                 metrics.bufferSeconds,
             );
+
 
             setBufferState(
                 metrics.bufferState,
@@ -145,11 +203,9 @@ export default function VideoPlayer() {
         };
 
 
-        // Run immediately.
         updateBuffer();
 
 
-        // Update every 250ms.
         const bufferInterval =
             setInterval(
                 updateBuffer,
@@ -158,266 +214,701 @@ export default function VideoPlayer() {
 
 
         // ==================================================
-        // HLS.JS
+        // LOAD VIDEO INFORMATION
         // ==================================================
 
-        if (Hls.isSupported()) {
+        async function loadVideo() {
 
-            const hls =
-                new Hls();
+            try {
 
+                // ------------------------------------------
+                // Check cancellation
+                // ------------------------------------------
 
-            console.log(
-                "HLS VERSION:",
-                Hls.version,
-            );
-
-
-            // ==================================================
-            // FRAGMENT LOADED
-            // ==================================================
-
-            const handleFragmentLoaded = (
-                _: unknown,
-                data: any,
-            ) => {
-                const metrics =
-                    getFragmentMetrics(data, hls);
-
-                if (!metrics) {
+                if (cancelled) {
                     return;
                 }
 
-                const currentBufferSeconds =
-                    bufferSecondsRef.current;
 
-                const currentBufferState =
-                    bufferStateRef.current;
+                // ------------------------------------------
+                // Get video element
+                // ------------------------------------------
 
-                const decision =
-                    abrControllerRef.current.processFragment(
-                        metrics.bytesLoaded,
-                        metrics.downloadTimeSeconds,
-                        currentBufferSeconds,
-                        metrics.segmentDurationSeconds,
-                        metrics.levelBitratesMbps,
+                const currentVideoElement =
+                    videoRef.current;
+
+                if (
+                    currentVideoElement === null
+                ) {
+                    return;
+                }
+
+
+                // ------------------------------------------
+                // Get JWT
+                // ------------------------------------------
+
+                const token =
+                    localStorage.getItem(
+                        "access_token",
                     );
 
-                hls.nextLoadLevel =
-                    decision.nextLevel;
+
+                if (!token) {
+
+                    throw new Error(
+                        "User is not authenticated",
+                    );
+                }
 
 
-                // -------------------------------------------
-                // TIMESTAMP
-                // -------------------------------------------
+                // ==================================================
+                // GET VIDEO METADATA
+                // ==================================================
 
-                const timestamp =
-                    metrics.timestamp;
-
-
-                // -------------------------------------------
-                // TIMELINE ENTRY
-                // -------------------------------------------
-
-                const timelineEntry:
-                    ABRTimelineEntry = {
-
-                    timestamp,
-
-                    throughputMbps:
-                        decision.throughputMbps,
-
-                    smoothedThroughputMbps:
-                        decision.smoothedThroughputMbps,
-
-                    safeThroughputMbps:
-                        decision.safeThroughputMbps,
-
-                    currentLevel:
-                        decision.currentLevel,
-
-                    idealLevel:
-                        decision.idealLevel,
-
-                    nextLevel:
-                        decision.nextLevel,
-
-                    decision:
-                        decision.decision,
-
-                    startup:
-                        decision.startup,
-                };
+                console.log(
+                    "Loading video metadata...",
+                );
 
 
-                setTimeline(
-                    (previous) => {
+                const response =
+                    await fetch(
+                        `${API_URL}/videos/${videoId}`,
+                        {
+                            headers: {
+                                Authorization:
+                                    `Bearer ${token}`,
+                            },
+                        },
+                    );
 
-                        const updated = [
-                            ...previous,
-                            timelineEntry,
-                        ];
 
-                        return updated.slice(
-                            -MAX_TIMELINE_ENTRIES,
+                if (!response.ok) {
+
+                    throw new Error(
+                        "Failed to fetch video",
+                    );
+                }
+
+
+                const data =
+                    await response.json();
+
+
+                // ------------------------------------------
+                // Check cancellation after fetch
+                // ------------------------------------------
+
+                if (cancelled) {
+                    return;
+                }
+
+
+                console.log(
+                    "Video metadata:",
+                    data,
+                );
+
+
+                // ==================================================
+                // CHECK PROCESSING STATUS
+                // ==================================================
+
+                if (
+                    data.status !== "completed" ||
+                    !data.processed_storage_key
+                ) {
+
+                    throw new Error(
+                        "Video is not ready for playback",
+                    );
+                }
+
+
+                // ==================================================
+                // BUILD CLOUDFRONT URL
+                // ==================================================
+
+                const playbackUrl =
+                    `${CLOUDFRONT_URL}/${data.processed_storage_key}`;
+
+
+                console.log(
+                    "Playback URL:",
+                    playbackUrl,
+                );
+
+
+                // ==================================================
+                // HLS.JS
+                // ==================================================
+
+                if (Hls.isSupported()) {
+
+                    // ------------------------------------------
+                    // Check cancellation
+                    // ------------------------------------------
+
+                    if (cancelled) {
+                        return;
+                    }
+
+
+                    // ------------------------------------------
+                    // Create HLS
+                    // ------------------------------------------
+
+                    hls = new Hls({
+                        // Keep hls.js in normal automatic mode.
+                        // Our custom ABR controls nextLoadLevel.
+                        startLevel: 0,
+                    });
+
+
+                    console.log(
+                        "HLS VERSION:",
+                        Hls.version,
+                    );
+
+
+                    // ==================================================
+                    // MEDIA ATTACHED
+                    // ==================================================
+
+                    hls.on(
+                        Hls.Events.MEDIA_ATTACHED,
+                        () => {
+
+                            if (cancelled) {
+                                return;
+                            }
+
+                            console.log(
+                                "HLS: MEDIA_ATTACHED",
+                            );
+                        },
+                    );
+
+
+                    // ==================================================
+                    // MANIFEST PARSED
+                    // ==================================================
+
+                    hls.on(
+                        Hls.Events.MANIFEST_PARSED,
+                        (_, data) => {
+
+                            if (cancelled) {
+                                return;
+                            }
+
+
+                            console.log(
+                                "HLS: MANIFEST_PARSED",
+                            );
+
+
+                            console.log(
+                                "HLS levels:",
+                                hls?.levels.map(
+                                    (level, index) => ({
+                                        index,
+                                        width: level.width,
+                                        height: level.height,
+                                        bitrate:
+                                            level.bitrate,
+                                    }),
+                                ),
+                            );
+
+
+                            // Explicitly start loading.
+                            hls?.startLoad();
+                        },
+                    );
+
+
+                    // ==================================================
+                    // FRAGMENT LOADING
+                    // ==================================================
+
+                    hls.on(
+                        Hls.Events.FRAG_LOADING,
+                        (_, data) => {
+
+                            if (cancelled) {
+                                return;
+                            }
+
+
+                            console.log(
+                                "HLS: REQUESTING FRAGMENT",
+                            );
+
+
+                            console.log(
+                                "Fragment URL:",
+                                data.frag.url,
+                            );
+
+
+                            console.log(
+                                "Fragment level:",
+                                data.frag.level,
+                            );
+                        },
+                    );
+
+
+                    // ==================================================
+                    // FRAGMENT LOADED
+                    // ==================================================
+
+                    const handleFragmentLoaded = (
+                        _: unknown,
+                        fragmentData: any,
+                    ) => {
+
+                        if (
+                            cancelled ||
+                            !hls
+                        ) {
+                            return;
+                        }
+
+
+                        // ------------------------------------------
+                        // Calculate metrics
+                        // ------------------------------------------
+
+                        const metrics =
+                            getFragmentMetrics(
+                                fragmentData,
+                                hls,
+                            );
+
+
+                        if (!metrics) {
+                            return;
+                        }
+
+
+                        // ==================================================
+                        // BUFFER INFORMATION
+                        // ==================================================
+
+                        const currentBufferSeconds =
+                            bufferSecondsRef.current;
+
+
+                        const currentBufferState =
+                            bufferStateRef.current;
+
+
+                        // ==================================================
+                        // ABR DECISION
+                        // ==================================================
+
+                        const decision =
+                            abrControllerRef.current
+                                .processFragment(
+                                    metrics.bytesLoaded,
+                                    metrics.downloadTimeSeconds,
+                                    currentBufferSeconds,
+                                    metrics.segmentDurationSeconds,
+                                    metrics.levelBitratesMbps,
+                                );
+
+
+                        // ==================================================
+                        // TELL HLS.JS NEXT QUALITY
+                        // ==================================================
+
+                        hls.nextLoadLevel =
+                            decision.nextLevel;
+
+
+                        console.log(
+                            "HLS CONTROL:",
+                            "nextLoadLevel =",
+                            hls.nextLoadLevel,
+                            "currentLevel =",
+                            hls.currentLevel,
                         );
-                    },
-                );
+
+
+                        // ==================================================
+                        // TIMELINE ENTRY
+                        // ==================================================
+
+                        const timestamp =
+                            metrics.timestamp;
+
+
+                        const timelineEntry:
+                            ABRTimelineEntry = {
+
+                            timestamp,
+
+                            throughputMbps:
+                                decision.throughputMbps,
+
+                            smoothedThroughputMbps:
+                                decision.smoothedThroughputMbps,
+
+                            safeThroughputMbps:
+                                decision.safeThroughputMbps,
+
+                            currentLevel:
+                                decision.currentLevel,
+
+                            idealLevel:
+                                decision.idealLevel,
+
+                            nextLevel:
+                                decision.nextLevel,
+
+                            decision:
+                                decision.decision,
+
+                            startup:
+                                decision.startup,
+                        };
+
+
+                        setTimeline(
+                            (previous) => {
+
+                                const updated = [
+                                    ...previous,
+                                    timelineEntry,
+                                ];
+
+
+                                return updated.slice(
+                                    -MAX_TIMELINE_ENTRIES,
+                                );
+                            },
+                        );
+
+
+                        // ==================================================
+                        // DEBUG
+                        // ==================================================
+
+                        console.log(
+                            "━━━━━━━━━━━━━━━━━━━━",
+                        );
+
+
+                        console.log(
+                            "Available bitrates:",
+                            metrics.levelBitratesMbps,
+                        );
+
+
+                        console.log(
+                            "Downloaded level:",
+                            fragmentData.frag.level,
+                        );
+
+
+                        console.log(
+                            "Throughput:",
+                            decision.throughputMbps.toFixed(2),
+                            "Mbps",
+                        );
+
+
+                        console.log(
+                            "Smoothed:",
+                            decision.smoothedThroughputMbps.toFixed(2),
+                            "Mbps",
+                        );
+
+
+                        console.log(
+                            "Safe:",
+                            decision.safeThroughputMbps.toFixed(2),
+                            "Mbps",
+                        );
+
+
+                        console.log(
+                            "Current:",
+                            decision.currentLevel,
+                        );
+
+
+                        console.log(
+                            "Ideal:",
+                            decision.idealLevel,
+                        );
+
+
+                        console.log(
+                            "Next:",
+                            decision.nextLevel,
+                        );
+
+
+                        console.log(
+                            "Decision:",
+                            decision.decision,
+                        );
+
+
+                        console.log(
+                            "Startup:",
+                            decision.startup,
+                        );
+
+
+                        console.log(
+                            "Buffer:",
+                            currentBufferSeconds.toFixed(2),
+                            "sec",
+                        );
+
+
+                        console.log(
+                            "Buffer state:",
+                            currentBufferState,
+                        );
+
+
+                        console.log(
+                            "Segment duration:",
+                            metrics.segmentDurationSeconds.toFixed(2),
+                            "sec",
+                        );
+
+
+                        console.log(
+                            "━━━━━━━━━━━━━━━━━━━━",
+                        );
+                    };
+
+
+                    // ==================================================
+                    // ERROR HANDLING
+                    // ==================================================
+
+                    hls.on(
+                        Hls.Events.ERROR,
+                        (_, data) => {
+
+                            if (cancelled) {
+                                return;
+                            }
+
+
+                            console.error(
+                                "HLS ERROR:",
+                                {
+                                    type: data.type,
+                                    details: data.details,
+                                    fatal: data.fatal,
+                                    response: data.response,
+                                    url: data.url,
+                                },
+                            );
+
+
+                            // --------------------------------------
+                            // Fatal error recovery
+                            // --------------------------------------
+
+                            if (
+                                data.fatal &&
+                                hls
+                            ) {
+
+                                switch (data.type) {
+
+                                    case Hls.ErrorTypes.NETWORK_ERROR:
+
+                                        console.error(
+                                            "HLS fatal network error. Retrying...",
+                                        );
+
+                                        hls.startLoad();
+
+                                        break;
+
+
+                                    case Hls.ErrorTypes.MEDIA_ERROR:
+
+                                        console.error(
+                                            "HLS fatal media error. Recovering...",
+                                        );
+
+                                        hls.recoverMediaError();
+
+                                        break;
+
+
+                                    default:
+
+                                        console.error(
+                                            "HLS fatal unrecoverable error.",
+                                        );
+
+                                        hls.destroy();
+
+                                        hls = null;
+
+                                        break;
+                                }
+                            }
+                        },
+                    );
+
+
+                    // ==================================================
+                    // REGISTER FRAGMENT EVENT
+                    // ==================================================
+
+                    hls.on(
+                        Hls.Events.FRAG_LOADED,
+                        handleFragmentLoaded,
+                    );
+
+
+                    // ==================================================
+                    // ATTACH MEDIA FIRST
+                    // ==================================================
+
+                    hls.attachMedia(
+                        currentVideoElement,
+                    );
+
+
+                    // ==================================================
+                    // LOAD HLS SOURCE
+                    // ==================================================
+
+                    hls.loadSource(
+                        playbackUrl,
+                    );
+                }
 
 
                 // ==================================================
-                // DEBUG
+                // SAFARI / NATIVE HLS
                 // ==================================================
 
-                console.log(
-                    "━━━━━━━━━━━━━━━━━━━━",
-                );
-                console.log(
-                    "Available bitrates:",
-                    metrics.levelBitratesMbps,
-                );
+                else if (
+                    currentVideoElement.canPlayType(
+                        "application/vnd.apple.mpegurl",
+                    )
+                ) {
 
-                console.log(
-                    "Throughput:",
-                    decision.throughputMbps.toFixed(2),
-                    "Mbps",
-                );
-
-                console.log(
-                    "Smoothed:",
-                    decision.smoothedThroughputMbps.toFixed(2),
-                    "Mbps",
-                );
-
-                console.log(
-                    "Safe:",
-                    decision.safeThroughputMbps.toFixed(2),
-                    "Mbps",
-                );
-
-                console.log(
-                    "Current:",
-                    decision.currentLevel,
-                );
-
-                console.log(
-                    "Ideal:",
-                    decision.idealLevel,
-                );
-
-                console.log(
-                    "Next:",
-                    decision.nextLevel,
-                );
-
-                console.log(
-                    "Decision:",
-                    decision.decision,
-                );
-
-                console.log(
-                    "Startup:",
-                    decision.startup,
-                );
-
-                console.log(
-                    "Buffer:",
-                    currentBufferSeconds.toFixed(2),
-                    "sec",
-                );
-
-                console.log(
-                    "Buffer state:",
-                    currentBufferState,
-                );
-
-                console.log(
-                    "Segment duration:",
-                    metrics.segmentDurationSeconds.toFixed(2),
-                    "sec",
-                );
-
-                console.log(
-                    "━━━━━━━━━━━━━━━━━━━━",
-                );
-            };
+                    console.log(
+                        "Using native HLS support.",
+                    );
 
 
-            // ==================================================
-            // REGISTER EVENT
-            // ==================================================
-
-            hls.on(
-                Hls.Events.FRAG_LOADED,
-                handleFragmentLoaded,
-            );
+                    currentVideoElement.src =
+                        playbackUrl;
+                }
 
 
-            // ==================================================
-            // START HLS
-            // ==================================================
+                else {
 
-            hls.loadSource(HLS_URL);
+                    throw new Error(
+                        "HLS is not supported in this browser",
+                    );
+                }
 
-            hls.attachMedia(video);
+            } catch (error) {
 
+                if (!cancelled) {
 
-            // ==================================================
-            // CLEANUP
-            // ==================================================
-
-            return () => {
-
-                video.removeEventListener(
-                    "play",
-                    handlePlay,
-                );
-
-                clearInterval(
-                    bufferInterval,
-                );
-
-                hls.off(
-                    Hls.Events.FRAG_LOADED,
-                    handleFragmentLoaded,
-                );
-
-                hls.destroy();
-            };
+                    console.error(
+                        "Failed to load video:",
+                        error,
+                    );
+                }
+            }
         }
 
 
         // ==================================================
-        // SAFARI / NATIVE HLS
+        // START LOADING
         // ==================================================
 
-        if (
-            video.canPlayType(
-                "application/vnd.apple.mpegurl",
-            )
-        ) {
-
-            video.src = HLS_URL;
-        }
+        loadVideo();
 
 
         // ==================================================
-        // NATIVE HLS CLEANUP
+        // CLEANUP
         // ==================================================
 
         return () => {
 
-            video.removeEventListener(
+            console.log(
+                "VideoPlayer cleanup",
+            );
+
+
+            // ------------------------------------------
+            // Cancel async operations
+            // ------------------------------------------
+
+            cancelled = true;
+
+
+            // ------------------------------------------
+            // Remove play listener
+            // ------------------------------------------
+
+            videoElement.removeEventListener(
                 "play",
                 handlePlay,
             );
 
+
+            // ------------------------------------------
+            // Stop buffer monitoring
+            // ------------------------------------------
+
             clearInterval(
                 bufferInterval,
             );
+
+
+            // ------------------------------------------
+            // Destroy HLS
+            // ------------------------------------------
+
+            if (hls) {
+
+                console.log(
+                    "Destroying HLS instance",
+                );
+
+                hls.destroy();
+
+                hls = null;
+            }
+
+
+            // ------------------------------------------
+            // Reset video element
+            // ------------------------------------------
+
+            videoElement.pause();
+
+            videoElement.removeAttribute(
+                "src",
+            );
+
+            videoElement.load();
         };
 
-    }, []);
+
+    }, [videoId]);
 
 
     // ==================================================
@@ -425,6 +916,7 @@ export default function VideoPlayer() {
     // ==================================================
 
     return (
+
         <div className="player-container">
 
             <h1>
