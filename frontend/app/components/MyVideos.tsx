@@ -1,11 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import VideoPlayer from "@/app/components/VideoPlayer";
+import { useRouter } from "next/navigation";
 import VideoUpload from "@/app/components/VideoUpload";
 
-const API_URL =
-    process.env.NEXT_PUBLIC_API_URL!;
+const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 interface Video {
     id: number;
@@ -16,24 +15,29 @@ interface Video {
 }
 
 export default function MyVideos() {
-    const [videos, setVideos] =
-        useState<Video[]>([]);
+    const router = useRouter();
 
-    const [selectedVideoId, setSelectedVideoId] =
-        useState<number | null>(null);
+    const [videos, setVideos] = useState<Video[]>([]);
 
-    const [loading, setLoading] =
-        useState(true);
+    const [loading, setLoading] = useState(true);
 
-    const [error, setError] =
-        useState("");
+    const [error, setError] = useState("");
 
+    const [showUpload, setShowUpload] = useState(false);
+
+    const [videoToDelete, setVideoToDelete] =
+        useState<Video | null>(null);
+
+    const [deleting, setDeleting] = useState(false);
+
+    /*
+     * Load all videos belonging to
+     * the currently authenticated user.
+     */
     const loadVideos = useCallback(async () => {
         try {
             const token =
-                localStorage.getItem(
-                    "access_token",
-                );
+                localStorage.getItem("access_token");
 
             if (!token) {
                 throw new Error(
@@ -41,16 +45,15 @@ export default function MyVideos() {
                 );
             }
 
-            const response =
-                await fetch(
-                    `${API_URL}/videos/`,
-                    {
-                        headers: {
-                            Authorization:
-                                `Bearer ${token}`,
-                        },
+            const response = await fetch(
+                `${API_URL}/videos/`,
+                {
+                    headers: {
+                        Authorization:
+                            `Bearer ${token}`,
                     },
-                );
+                },
+            );
 
             if (!response.ok) {
                 throw new Error(
@@ -58,8 +61,7 @@ export default function MyVideos() {
                 );
             }
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             setVideos(data);
             setError("");
@@ -73,56 +75,80 @@ export default function MyVideos() {
             setLoading(false);
         }
     }, []);
-    async function handleDelete(videoId: number) {
-        const confirmed = window.confirm(
-            "Are you sure you want to delete this video?"
-        );
 
-        if (!confirmed) {
+    /*
+     * Open delete confirmation dialog.
+     */
+    function handleDelete(video: Video) {
+        setVideoToDelete(video);
+    }
+
+    /*
+     * Actually delete the video after
+     * user confirms.
+     */
+    async function confirmDelete() {
+        if (!videoToDelete) {
             return;
         }
 
         try {
+            setDeleting(true);
+
             const token =
-                localStorage.getItem("access_token");
+                localStorage.getItem(
+                    "access_token",
+                );
+
+            if (!token) {
+                throw new Error(
+                    "User is not authenticated",
+                );
+            }
 
             const response = await fetch(
-                `${API_URL}/videos/${videoId}`,
+                `${API_URL}/videos/${videoToDelete.id}`,
                 {
                     method: "DELETE",
                     headers: {
                         Authorization:
                             `Bearer ${token}`,
                     },
-                }
+                },
             );
 
             if (!response.ok) {
                 throw new Error(
-                    "Failed to delete video"
+                    "Failed to delete video",
                 );
             }
 
-            // Close player if the deleted video
-            // is currently selected.
-            if (selectedVideoId === videoId) {
-                setSelectedVideoId(null);
-            }
+            /*
+             * Close delete dialog.
+             */
+            setVideoToDelete(null);
 
-            // Refresh video list
+            /*
+             * Refresh video list.
+             */
             await loadVideos();
-
         } catch (error) {
             console.error(error);
+        } finally {
+            setDeleting(false);
         }
     }
 
+    /*
+     * Initial video loading.
+     */
     useEffect(() => {
         loadVideos();
     }, [loadVideos]);
 
     /*
-     * Poll while at least one video is processing.
+     * Poll every 5 seconds while at least
+     * one video is waiting or processing.
      */
     useEffect(() => {
         const hasProcessingVideo =
@@ -136,127 +162,405 @@ export default function MyVideos() {
             return;
         }
 
-        const interval =
-            setInterval(() => {
-                loadVideos();
-            }, 5000);
+        const interval = setInterval(() => {
+            loadVideos();
+        }, 5000);
 
         return () => {
             clearInterval(interval);
         };
     }, [videos, loadVideos]);
 
+    /*
+     * Loading state.
+     */
     if (loading) {
-        return <p>Loading videos...</p>;
+        return (
+            <main>
+                <p>Loading videos...</p>
+            </main>
+        );
     }
 
+    /*
+     * Error state.
+     */
     if (error) {
         return (
-            <div>
-                <p>{error}</p>
+            <main>
+                <div className="empty-state">
+                    <h2>{error}</h2>
 
-                <button
-                    onClick={loadVideos}
-                >
-                    Retry
-                </button>
-            </div>
+                    <button
+                        className="upload-button"
+                        onClick={loadVideos}
+                    >
+                        Retry
+                    </button>
+                </div>
+            </main>
         );
     }
 
     return (
-        <div>
-            <h1>My Videos</h1>
+        <main>
 
-            <VideoUpload
-                onUploadComplete={loadVideos}
-            />
+            {/* =========================
+                HEADER
+            ========================= */}
 
-            <hr />
+            <header className="page-header">
+
+                <div>
+                    <h1>My Videos</h1>
+
+                    <p>
+                        {videos.length}{" "}
+                        {videos.length === 1
+                            ? "video"
+                            : "videos"}
+                    </p>
+                </div>
+
+                <button
+                    className="upload-button"
+                    onClick={() =>
+                        setShowUpload(true)
+                    }
+                >
+                    + Upload Video
+                </button>
+
+            </header>
+
+
+            {/* =========================
+                VIDEO LIST
+            ========================= */}
 
             {videos.length === 0 ? (
-                <p>
-                    You haven't uploaded any videos yet.
-                </p>
+
+                /*
+                 * Empty state
+                 */
+                <div className="empty-state">
+
+                    <div className="empty-state-icon">
+                        🎬
+                    </div>
+
+                    <h2>
+                        No videos yet
+                    </h2>
+
+                    <p>
+                        Upload your first video
+                        and it will appear here
+                        once processing is complete.
+                    </p>
+
+                    <button
+                        className="upload-button"
+                        onClick={() =>
+                            setShowUpload(true)
+                        }
+                    >
+                        Upload Your First Video
+                    </button>
+
+                </div>
+
             ) : (
-                <div>
+
+                /*
+                 * Video cards
+                 */
+                <div className="video-grid">
+
                     {videos.map((video) => (
+
                         <div
                             key={video.id}
-                            style={{
-                                marginBottom: "20px",
-                            }}
+                            className="video-card"
                         >
-                            <h2>
-                                {video.title}
-                            </h2>
 
-                            <p>
-                                File:{" "}
-                                {video.original_filename}
-                            </p>
+                            {/* =====================
+                                THUMBNAIL
+                            ===================== */}
 
-                            <p>
-                                Status:{" "}
-                                {video.status}
-                            </p>
+                            <div className="video-thumbnail">
+                                ▶
+                            </div>
 
-                            {video.status ===
-                                "uploaded" && (
+
+                            {/* =====================
+                                VIDEO INFORMATION
+                            ===================== */}
+
+                            <div className="video-info">
+
+                                <h2>
+                                    {video.title}
+                                </h2>
+
+                                <p className="video-filename">
+                                    {video.original_filename}
+                                </p>
+
+
+                                {/* =====================
+                                    STATUS
+                                ===================== */}
+
+                                {video.status ===
+                                    "completed" && (
+                                    <span className="status status-ready">
+                                        Ready
+                                    </span>
+                                )}
+
+                                {video.status ===
+                                    "processing" && (
+                                    <span className="status status-processing">
+                                        Processing...
+                                    </span>
+                                )}
+
+                                {video.status ===
+                                    "uploaded" && (
+                                    <span className="status status-waiting">
+                                        Waiting...
+                                    </span>
+                                )}
+
+                                {video.status ===
+                                    "failed" && (
+                                    <span className="status status-failed">
+                                        Failed
+                                    </span>
+                                )}
+
+
+                                {/* =====================
+                                    STATUS MESSAGE
+                                ===================== */}
+
+                                {video.status ===
+                                    "processing" && (
                                     <p>
-                                        Waiting for processing...
+                                        Your video is
+                                        being converted
+                                        to HLS.
                                     </p>
                                 )}
 
-                            {video.status ===
-                                "processing" && (
+                                {video.status ===
+                                    "uploaded" && (
                                     <p>
-                                        Processing video...
+                                        Waiting for the
+                                        processing worker.
                                     </p>
                                 )}
 
-                            {video.status === "completed" && (
-                                <>
+                                {video.status ===
+                                    "failed" && (
+                                    <p>
+                                        Video processing
+                                        failed.
+                                    </p>
+                                )}
+
+
+                                {/* =====================
+                                    ACTIONS
+                                ===================== */}
+
+                                <div className="video-actions">
+
+                                    {video.status ===
+                                        "completed" && (
+                                        <button
+                                            className="play-button"
+                                            onClick={() =>
+                                                router.push(
+                                                    `/videos/${video.id}`,
+                                                )
+                                            }
+                                        >
+                                            ▶ Play
+                                        </button>
+                                    )}
+
                                     <button
+                                        className="delete-button"
                                         onClick={() =>
-                                            setSelectedVideoId(video.id)
+                                            handleDelete(
+                                                video,
+                                            )
                                         }
                                     >
-                                        Play
+                                        Delete
                                     </button>
 
-                                </>
-                            )}
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    ))}
+
+                </div>
+            )}
+
+
+            {/* =========================
+                UPLOAD MODAL
+            ========================= */}
+
+            {showUpload && (
+
+                <div
+                    className="upload-overlay"
+                    onClick={() =>
+                        setShowUpload(false)
+                    }
+                >
+
+                    <div
+                        className="upload-modal"
+                        onClick={(event) =>
+                            event.stopPropagation()
+                        }
+                    >
+
+                        {/* Modal header */}
+
+                        <div className="upload-modal-header">
+
+                            <div>
+                                <h2>
+                                    Upload Video
+                                </h2>
+
+                                <p>
+                                    Upload a video
+                                    to your library.
+                                </p>
+                            </div>
+
                             <button
+                                className="close-button"
                                 onClick={() =>
-                                    handleDelete(video.id)
+                                    setShowUpload(false)
                                 }
                             >
-                                Delete
+                                ×
                             </button>
 
-                            {video.status ===
-                                "failed" && (
-                                    <p>
-                                        Processing failed.
-                                    </p>
-                                )}
                         </div>
-                    ))}
+
+
+                        {/* Existing upload component */}
+
+                        <VideoUpload
+                            onUploadComplete={() => {
+                                setShowUpload(false);
+
+                                loadVideos();
+                            }}
+                        />
+
+                    </div>
+
                 </div>
             )}
 
-            {selectedVideoId !== null && (
-                <div>
-                    <hr />
 
-                    <VideoPlayer
-                        videoId={
-                            selectedVideoId
+            {/* =========================
+                DELETE CONFIRMATION MODAL
+            ========================= */}
+
+            {videoToDelete && (
+
+                <div
+                    className="upload-overlay"
+                    onClick={() => {
+                        if (!deleting) {
+                            setVideoToDelete(null);
                         }
-                    />
+                    }}
+                >
+
+                    <div
+                        className="delete-modal"
+                        onClick={(event) =>
+                            event.stopPropagation()
+                        }
+                    >
+
+                        {/* Delete icon */}
+
+                        <div className="delete-icon">
+                            🗑
+                        </div>
+
+
+                        {/* Content */}
+
+                        <h2>
+                            Delete video?
+                        </h2>
+
+                        <p>
+                            Are you sure you want
+                            to delete{" "}
+                            <strong>
+                                "{videoToDelete.title}"
+                            </strong>
+                            ?
+                        </p>
+
+                        <p className="delete-warning">
+                            This action cannot be undone.
+                        </p>
+
+
+                        {/* Buttons */}
+
+                        <div className="delete-actions">
+
+                            <button
+                                className="cancel-delete-button"
+                                disabled={deleting}
+                                onClick={() =>
+                                    setVideoToDelete(
+                                        null,
+                                    )
+                                }
+                            >
+                                Cancel
+                            </button>
+
+                            <button
+                                className="confirm-delete-button"
+                                disabled={deleting}
+                                onClick={
+                                    confirmDelete
+                                }
+                            >
+                                {deleting
+                                    ? "Deleting..."
+                                    : "Delete Video"}
+                            </button>
+
+                        </div>
+
+                    </div>
+
                 </div>
             )}
-        </div>
+
+        </main>
     );
 }

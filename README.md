@@ -1,85 +1,154 @@
 # Adaptive Video Streaming
 
-A full-stack demo application that streams HLS video and adapts playback quality in real time based on measured network throughput.
+A full-stack adaptive streaming demo that uploads videos, transcodes them into HLS variants, and dynamically switches playback quality based on measured network throughput.
 
-The project combines a FastAPI backend for serving video assets and handling uploads with a Next.js frontend that uses `hls.js` to switch between quality levels automatically.
+This repository combines a FastAPI backend, PostgreSQL, Redis/Celery workers, Amazon S3, and a Next.js frontend that uses `hls.js` plus a custom bitrate decision pipeline to test adaptive playback behavior.
 
-## Overview
+## What this project does
 
-This repository is a compact adaptive streaming prototype:
+- Accepts user registration and login via JWT-based auth.
+- Lets authenticated users upload videos and track them in the database.
+- Stores uploaded videos in S3 and starts async background processing.
+- Uses FFmpeg to produce multiple HLS renditions such as 360p, 480p, and 720p.
+- Uploads generated manifests and TS segments to S3 as a processed video package.
+- Serves the HLS master playlist through the FastAPI app for playback.
+- Adapts quality in the browser using throughput estimation and buffer-aware decision logic.
+- Includes a bandwidth simulator that lets you test the ABR controller under different network conditions.
 
-- The backend exposes a static HLS directory and upload endpoints.
-- The frontend loads the HLS master playlist and chooses a bitrate based on observed download speed.
-- The app is designed for local development and demonstration, not production-scale deployment.
+## Tech stack
 
-## Architecture
-
-- Backend: FastAPI app in [backend/main.py](backend/main.py)
-- Frontend: Next.js app in [frontend/app/page.tsx](frontend/app/page.tsx) and [frontend/app/VideoPlayer.tsx](frontend/app/VideoPlayer.tsx)
-- Sample HLS assets: [backend/processed](backend/processed)
-- Uploaded videos: [backend/videos](backend/videos)
-
-## Features
-
-- Upload video files to the backend
-- Serve HLS media through the FastAPI static route
-- Browse available uploaded videos via API
-- Adaptive bitrate selection using throughput estimation
-- Startup ramp-up logic and hysteresis-based quality changes
-- Browser-based playback with `hls.js`
+- Frontend: Next.js, React, TypeScript, `hls.js`
+- Backend: FastAPI, SQLAlchemy, Pydantic
+- Database: PostgreSQL
+- Background jobs: Celery + Redis
+- Object storage: Amazon S3
+- Transcoding: FFmpeg
+- Auth: JWT + password hashing
 
 ## Repository structure
 
 ```text
 adaptive-video-streaming/
 ├── backend/
-│   ├── main.py
-│   ├── requirements.txt
+│   ├── alembic/
+│   ├── app/
+│   │   ├── auth/
+│   │   ├── database/
+│   │   ├── processing/
+│   │   ├── storage/
+│   │   └── videos/
 │   ├── processed/
-│   │   └── master.m3u8 and quality variants
-│   └── videos/
-│       └── sample uploaded files
+│   ├── tmp/
+│   ├── videos/
+│   ├── .env
+│   ├── alembic.ini
+│   ├── requirements.txt
+│   └── test_worker.py
 ├── frontend/
 │   ├── app/
+│   ├── public/
+│   ├── .env.local
 │   ├── package.json
 │   ├── next.config.ts
 │   ├── tsconfig.json
+│   ├── eslint.config.mjs
 │   └── README.md
-└── README.md
+├── README.md
+└── videos/
 ```
+
+## Core application flow
+
+1. A user registers or logs in through the FastAPI auth routes.
+2. The frontend uploads a video through the `/videos` endpoints.
+3. The backend stores the video metadata in PostgreSQL and enqueues Celery processing.
+4. The worker downloads the original video from S3, transcodes it into multiple HLS renditions, and uploads the output back to S3.
+5. The frontend loads the generated `master.m3u8` and uses the ABR logic to select the best quality for the current network state.
 
 ## Prerequisites
 
 - Python 3.10+
-- Node.js 18+
+- Node.js 20+
 - npm
+- Redis
+- PostgreSQL or a compatible hosted database
+- FFmpeg installed and available on your `PATH`
+- AWS S3 credentials with a bucket configured
 
-## Backend setup
+## Environment configuration
 
-From the repository root:
+Create a backend environment file at `backend/.env` with values similar to:
+
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/postgres
+JWT_SECRET_KEY=replace-with-a-long-random-secret
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+AWS_REGION=your-region
+AWS_S3_BUCKET=your-bucket-name
+```
+
+Create a frontend environment file at `frontend/.env.local` with:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_CLOUDFRONT_URL=http://localhost:8000
+```
+
+> The frontend reads the API base URL from `NEXT_PUBLIC_API_URL`, while the backend relies on the S3 and database settings from `backend/.env`.
+
+## Local development setup
+
+### 1) Install backend dependencies
 
 ```bash
 cd backend
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The backend will run at:
+### 2) Start Redis and the database
 
-- http://localhost:8000
+Make sure Redis is running locally and that your PostgreSQL database is reachable through `DATABASE_URL` in `backend/.env`.
 
-### Backend API
+### 3) Start the FastAPI backend
 
-- `GET /` — health/metadata response
-- `POST /upload` — upload a video file
-- `GET /videos` — list uploaded files
-- `GET /hls/{path}` — serve HLS manifests and segments from the `processed` directory
+```bash
+cd backend
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-## Frontend setup
+The backend exposes endpoints such as:
+
+- `GET /` — app metadata
+- `GET /db-test` — database connectivity check
+- `POST /auth/register` — register a user
+- `POST /auth/login` — login and obtain a JWT
+- `GET /videos/` — list the current user's videos
+- `POST /videos/` — upload a video file
+- `GET /hls/{path}` — serve HLS playlists and segments
+
+### 4) Start the Celery worker
 
 Open a second terminal and run:
+
+```bash
+cd backend
+source .venv/bin/activate
+celery -A app.processing.celery_app worker --loglevel=info
+```
+
+This worker handles the video transcription/processing pipeline once an upload is accepted.
+
+### 5) Start the frontend
+
+Open a third terminal and run:
 
 ```bash
 cd frontend
@@ -91,37 +160,48 @@ Then open:
 
 - http://localhost:3000
 
-The frontend fetches the HLS stream from:
+## Frontend experience
 
-```text
-http://127.0.0.1:8000/hls/master.m3u8
-```
+The Next.js app includes:
 
-## How the adaptive streaming works
+- a user/video dashboard
+- upload UI for video files
+- HLS playback for processed videos
+- an ABR quality timeline view
+- a simulator page to test network throttling and bandwidth transitions
 
-The player in [frontend/app/VideoPlayer.tsx](frontend/app/VideoPlayer.tsx) measures fragment download throughput, smooths recent samples, applies a safety factor, and decides whether to move to a higher or lower quality level.
+Key frontend files:
 
-The logic includes:
+- `frontend/app/page.tsx` — main entry page
+- `frontend/app/components/MyVideos.tsx` — user dashboard
+- `frontend/app/components/VideoUpload.tsx` — multipart upload flow
+- `frontend/app/components/VideoPlayer.tsx` — playback and HLS monitoring
+- `frontend/app/simulator/page.tsx` — network simulation environment
 
-- startup ramp-up for initial stabilization
-- throughput-based quality selection
-- hysteresis to avoid frequent up/down switching
-- quality level handoff via `hls.nextLoadLevel`
+## Adaptive bitrate logic
 
-## Suggested workflow
+The ABR logic lives in the frontend under `frontend/app/abr/` and is designed to:
 
-1. Start the backend.
-2. Start the frontend.
-3. Open the site in the browser.
-4. Upload a video via the backend or use the sample HLS stream already bundled in the processed folder.
-5. Observe the player adapting quality as network conditions change.
+- measure fragment download time
+- estimate available bandwidth
+- smooth recent throughput samples
+- apply hysteresis to reduce unnecessary quality switching
+- ramp up quality gradually on startup to avoid unstable transitions
+
+This makes the player behave like a real adaptive streaming client while remaining easy to inspect and tune in the browser.
+
+## Sample assets and generated output
+
+- `backend/processed/` contains sample HLS playlists and segment files.
+- `backend/tmp/` is used by the worker to stage transcoding output before upload.
+- `backend/videos/` is the local upload directory used by the backend.
 
 ## Notes
 
-- This is a local demo project and does not include a full production-ready streaming pipeline or deployment configuration.
-- The supplied `processed` directory already contains sample HLS playlists and segments for testing.
-- The backend CORS configuration is currently limited to `http://localhost:3000`.
+- This project is a local demo and prototype rather than a fully hardened production deployment.
+- The backend CORS configuration currently allows requests from `http://localhost:3000`.
+- Generated HLS files are uploaded to S3 and served as processed streams, so local-only playback requires the backend to be running and the S3 bucket to be reachable.
 
 ## License
 
-This project does not currently declare a license file. If you plan to distribute or publish it, add an explicit license before doing so.
+There is no explicit license file in this repository yet. If you plan to distribute or publish the project, add a license before doing so.
