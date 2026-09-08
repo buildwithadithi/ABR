@@ -121,6 +121,41 @@ export default function VideoPlayer({
             return;
         }
 
+        // Playback debugging
+        const handleWaiting = () => {
+            console.log("PLAYBACK WAITING", {
+                currentTime: videoElement.currentTime,
+                buffered: Array.from(
+                    { length: videoElement.buffered.length },
+                    (_, i) => ({
+                        start: videoElement.buffered.start(i),
+                        end: videoElement.buffered.end(i),
+                    })
+                ),
+            });
+        };
+
+        const handlePlaying = () => {
+            console.log("PLAYBACK PLAYING", {
+                currentTime: videoElement.currentTime,
+            });
+        };
+
+        const handleEnded = () => {
+            console.log("PLAYBACK ENDED");
+        };
+
+        const handleStalled = () => {
+            console.log("PLAYBACK STALLED", {
+                currentTime: videoElement.currentTime,
+            });
+        };
+
+        videoElement.addEventListener("waiting", handleWaiting);
+        videoElement.addEventListener("playing", handlePlaying);
+        videoElement.addEventListener("ended", handleEnded);
+        videoElement.addEventListener("stalled", handleStalled);
+
 
         // ------------------------------------------
         // HLS instance
@@ -359,11 +394,11 @@ export default function VideoPlayer({
                     // ------------------------------------------
 
                     hls = new Hls({
-                        // Keep hls.js in normal automatic mode.
-                        // Our custom ABR controls nextLoadLevel.
                         startLevel: 0,
+                        maxBufferLength: 30,
+                        maxMaxBufferLength: 60,
+                        backBufferLength: 30,
                     });
-
 
                     console.log(
                         "HLS VERSION:",
